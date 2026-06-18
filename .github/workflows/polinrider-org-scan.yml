@@ -1,0 +1,134 @@
+name: PolinRider Org-Wide Scan
+
+# Lives in one repo (recommended: your security-tools repo).
+# Scans every repo in the org on a schedule and on manual trigger.
+# Requires a PAT or GitHub App token with read access to all org repos,
+# stored as the ORG_SCAN_TOKEN secret (classic PAT scope: repo, read:org).
+
+on:
+  push:
+    branches: [main]      # pushing to this repo triggers a full org scan
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC — adjust to your timezone needs
+  workflow_dispatch:
+    inputs:
+      org:
+        description: "Org to scan (defaults to the org this workflow lives in)"
+        required: false
+        type: string
+      js_all:
+        description: "Scan all .js files, not just known config files"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  discover-repos:
+    name: List org repositories
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.list.outputs.repos }}
+    steps:
+      - name: List all non-archived repos in org
+        id: list
+        env:
+          GH_TOKEN: ${{ secrets.ORG_SCAN_TOKEN }}
+          TARGET_ORG: ${{ inputs.org || github.repository_owner }}
+        run: |
+          repos=$(gh repo list "$TARGET_ORG" \
+            --limit 1000 \
+            --no-archived \
+            --json nameWithOwner \
+            --jq '[.[].nameWithOwner]')
+          echo "Found repos: $repos"
+          echo "repos=$(echo "$repos" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  scan:
+    name: Scan ${{ matrix.repo }}
+    needs: discover-repos
+    runs-on: ubuntu-latest
+    continue-on-error: true   # one infected/broken repo shouldn't stop the rest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJson(needs.discover-repos.outputs.repos) }}
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          token: ${{ secrets.ORG_SCAN_TOKEN }}
+          fetch-depth: 0
+          path: target
+
+      - name: Checkout scanner script
+        uses: actions/checkout@v4
+        with:
+          path: tools
+
+      - name: Run scanner
+        id: scan
+        run: |
+          chmod +x tools/scripts/polinrider-scanner.sh
+          ARGS="--verbose"
+          if [ "${{ inputs.js_all }}" = "true" ]; then
+            ARGS="$ARGS --js-all"
+          fi
+          ./tools/scripts/polinrider-scanner.sh $ARGS ./target | tee scan-output.txt
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-result-${{ strategy.job-index }}-${{ github.run_id }}
+          path: scan-output.txt
+          if-no-files-found: ignore
+
+  report:
+    name: Aggregate and alert
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all scan results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: scan-result-*
+          path: results
+          merge-multiple: true
+
+      - name: Build summary
+        id: summary
+        run: |
+          infected_files=$(grep -l "INFECTED" results/*.txt 2>/dev/null || true)
+          if [ -n "$infected_files" ]; then
+            echo "found_infections=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## :rotating_light: PolinRider infections found"
+              echo ""
+              for f in $infected_files; do
+                echo '```'
+                cat "$f"
+                echo '```'
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "found_infections=false" >> "$GITHUB_OUTPUT"
+            echo "## :white_check_mark: No PolinRider infections found across the org" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Alert Slack on infection
+        if: steps.summary.outputs.found_infections == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_SECURITY_WEBHOOK }}
+        run: |
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            curl -sS -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\":rotating_light: PolinRider malware detected in one or more org repos. See run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\"}" \
+              "$SLACK_WEBHOOK_URL"
+          fi
+
+      - name: Fail workflow if infections found
+        if: steps.summary.outputs.found_infections == 'true'
+        run: |
+          echo "Infections detected — see job summary and artifacts for details."
+          exit 1
