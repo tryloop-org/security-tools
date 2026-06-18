@@ -38,8 +38,8 @@ jobs:
           repos=$(gh repo list "$TARGET_ORG" \
             --limit 1000 \
             --no-archived \
-            --json nameWithOwner \
-            --jq '[.[].nameWithOwner]')
+            --json nameWithOwner,pushedAt \
+            --jq '[.[] | select(.pushedAt != null) | .nameWithOwner]')
           echo "Found repos: $repos"
           echo "repos=$(echo "$repos" | jq -c .)" >> "$GITHUB_OUTPUT"
 
