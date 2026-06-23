@@ -34,26 +34,25 @@ jobs:
     name: Scan for PolinRider malware
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout target repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history so reflog/log checks are meaningful
+          fetch-depth: 0
+          path: target
 
-      - name: Fetch scanner script
-        env:
-          GH_TOKEN: ${{ secrets.SECURITY_TOOLS_PAT || github.token }}
-        run: |
-          # Pulls the canonical scanner from the org's security-tools repo.
-          # Update OWNER/security-tools below to match your org.
-          curl -sSL \
-            -H "Authorization: token ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github.v3.raw" \
-            "https://api.github.com/repos/${{ github.repository_owner }}/security-tools/contents/scripts/polinrider-scanner.sh?ref=main" \
-            -o polinrider-scanner.sh
-          chmod +x polinrider-scanner.sh
+      - name: Checkout security-tools (scanner source)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/security-tools
+          ref: main
+          path: security-tools
+          # github.token works for private repos in the same org
+          # when the workflow is called with secrets: inherit
+          token: ${{ secrets.SECURITY_TOOLS_PAT || github.token }}
 
       - name: Run scanner
         run: |
+          chmod +x security-tools/scripts/polinrider-scanner.sh
           ARGS=""
           if [ "${{ inputs.verbose }}" = "true" ]; then
             ARGS="$ARGS --verbose"
@@ -61,13 +60,12 @@ jobs:
           if [ "${{ inputs.js_all }}" = "true" ]; then
             ARGS="$ARGS --js-all"
           fi
-          ./polinrider-scanner.sh $ARGS "${{ github.workspace }}"
+          ./security-tools/scripts/polinrider-scanner.sh $ARGS ./target
 
       - name: Upload scan log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: polinrider-scan-log-${{ github.run_id }}
-          path: |
-            ./*.log
+          path: "*.log"
           if-no-files-found: ignore
