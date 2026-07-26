@@ -18,6 +18,12 @@ name: PolinRider Malware Scan (Reusable)
 on:
   workflow_call:
     inputs:
+      runner:
+        description: >
+          Runner labels as a JSON array. If the caller sets this, that value is used;
+          if omitted, falls back to the in-cluster momah/ai-garden self-hosted runner below.
+        type: string
+        default: '["self-hosted", "linux", "x64", "momah", "ai-garden"]'
       js_all:
         description: "Scan all .js files, not just known config files"
         type: boolean
@@ -32,7 +38,7 @@ on:
 jobs:
   scan:
     name: Scan for PolinRider malware
-    runs-on: ai-garden
+    runs-on: ${{ fromJSON(inputs.runner) }}
     steps:
       - name: Checkout target repository
         uses: actions/checkout@v4
