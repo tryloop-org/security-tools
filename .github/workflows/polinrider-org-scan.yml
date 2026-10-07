@@ -25,28 +25,46 @@ on:
 jobs:
   discover-repos:
     name: List org repositories
-    runs-on: ubuntu-latest
+    runs-on: ["self-hosted", "linux", "x64", "momah", "ai-garden"]
     outputs:
       repos: ${{ steps.list.outputs.repos }}
     steps:
+      # The in-cluster runner image ships neither gh nor jq — the same gap that
+      # makes stages/verify-deploy.yml install kubectl by hand. So the listing
+      # goes straight at the REST API and is shaped with python3, which the
+      # image does have (see stages/build-image.yml).
       - name: List all non-archived repos in org
         id: list
         env:
           GH_TOKEN: ${{ secrets.ORG_SCAN_TOKEN }}
           TARGET_ORG: ${{ inputs.org || github.repository_owner }}
         run: |
-          repos=$(gh repo list "$TARGET_ORG" \
-            --limit 1000 \
-            --no-archived \
-            --json nameWithOwner,isEmpty \
-            --jq '[.[] | select(.isEmpty == false) | .nameWithOwner]')
+          set -eu
+          page=1
+          : > repos.txt
+          while :; do
+            curl -sS -f \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/${TARGET_ORG}/repos?type=all&per_page=100&page=${page}" \
+              > page.json
+            count=$(python3 -c 'import json;print(len(json.load(open("page.json"))))')
+            if [ "$count" = "0" ]; then
+              break
+            fi
+            # Skip archived repos, and empty ones: there is nothing to scan and
+            # actions/checkout fails the matrix leg on a repo with no commits.
+            python3 -c 'import json;[print(r["full_name"]) for r in json.load(open("page.json")) if not r["archived"] and r["size"] > 0]' >> repos.txt
+            page=$((page + 1))
+          done
+          repos=$(python3 -c 'import json;print(json.dumps([l.strip() for l in open("repos.txt") if l.strip()]))')
           echo "Found repos: $repos"
-          echo "repos=$(echo "$repos" | jq -c .)" >> "$GITHUB_OUTPUT"
+          echo "repos=$repos" >> "$GITHUB_OUTPUT"
 
   scan:
     name: Scan ${{ matrix.repo }}
     needs: discover-repos
-    runs-on: ubuntu-latest
+    runs-on: ["self-hosted", "linux", "x64", "momah", "ai-garden"]
     continue-on-error: true   # one infected/broken repo shouldn't stop the rest
     strategy:
       fail-fast: false
@@ -87,7 +105,7 @@ jobs:
     name: Aggregate and alert
     needs: scan
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ["self-hosted", "linux", "x64", "momah", "ai-garden"]
     steps:
       - name: Download all scan results
         uses: actions/download-artifact@v4
