@@ -23,7 +23,7 @@ on:
           Runner labels as a JSON array. If the caller sets this, that value is used;
           if omitted, falls back to the in-cluster momah/ai-garden self-hosted runner below.
         type: string
-        default: '["self-hosted", "linux", "x64", "momah", "ai-garden"]'
+        default: '["self-hosted", "momah-vm"]'
       js_all:
         description: "Scan all .js files, not just known config files"
         type: boolean
